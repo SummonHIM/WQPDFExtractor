@@ -40,11 +40,10 @@ python main.py
 
 ```
 output/
-└── {book_id}_{book_title}/
-    └── {session_id}/
-        ├── images/
-        │   ├── 0001.png
-        │   ├── 0002.png
-        │   └── ...
-        └── {book_title}.pdf
+└── {book_title}/
+    ├── images/
+    │   ├── 0001.png
+    │   ├── 0002.png
+    │   └── ...
+    └── {book_title}.pdf
 ```
