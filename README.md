@@ -40,7 +40,7 @@ python main.py
 
 ```
 output/
-└── {book_title}/
+└── {book_id}/
     ├── images/
     │   ├── 0001.png
     │   ├── 0002.png
