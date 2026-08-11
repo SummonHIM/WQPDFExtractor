@@ -1,4 +1,4 @@
-# WQXueTangPDFGenerator
+# WQPDFExtractor
 
 A browser-based tool that extracts page images from online PDF readers and compiles them into local PDF files. It uses Playwright to automate a real Chromium browser, intercepts image slice network requests, reassembles them with correct layout and rotation, and outputs a complete PDF.
 

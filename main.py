@@ -1,5 +1,7 @@
+import argparse
 import asyncio
 import re
+import tempfile
 from pathlib import Path
 
 from playwright.async_api import async_playwright, BrowserContext, Page
@@ -11,10 +13,8 @@ BOOKSHELF_URL = "https://wqbook.wqxuetang.com/user/userbookshelf"
 PDF_URL_PATTERN = re.compile(r"https://[^/]*\.wqxuetang\.com/deep/read/pdf")
 
 DISABLE_DEVTOOL_BYPASS = """
-// 绕过 disable-devtool 检测
 Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
 Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight });
-// 阻止 debugger 语句
 const originalFunction = Function.prototype.constructor;
 Function.prototype.constructor = function(...args) {
     if (args.length > 0 && typeof args[args.length - 1] === 'string' && args[args.length - 1].includes('debugger')) {
@@ -22,7 +22,6 @@ Function.prototype.constructor = function(...args) {
     }
     return originalFunction.apply(this, args);
 };
-// 覆盖 setInterval/setTimeout 中的检测
 const _setInterval = window.setInterval;
 window.setInterval = function(fn, delay, ...args) {
     const fnStr = typeof fn === 'function' ? fn.toString() : String(fn);
@@ -39,15 +38,18 @@ window.setTimeout = function(fn, delay, ...args) {
     }
     return _setTimeout.call(this, fn, delay, ...args);
 };
-// 阻止页面关闭
 window.close = function() {};
-// 阻止通过 console 检测
-const _consoleLog = console.log;
 Object.defineProperty(console, '_commandLineAPI', { get: () => undefined });
 """
 
 
-async def handle_new_page(page: Page, tasks: dict[str, asyncio.Task], completed: set[str]):
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force", action="store_true", help="Force re-download all pages")
+    return parser.parse_args()
+
+
+async def handle_new_page(page: Page, tasks: dict[str, asyncio.Task], completed: set[str], temp_dir: Path, force: bool):
     url = page.url
     if not PDF_URL_PATTERN.search(url):
         return
@@ -63,7 +65,7 @@ async def handle_new_page(page: Page, tasks: dict[str, asyncio.Task], completed:
     bid = bid_match.group(1) if bid_match else "unknown"
 
     print(f"[{bid}] 检测到新的PDF页面: {url}")
-    extractor = BookExtractor(page, OUTPUT_DIR, page_key)
+    extractor = BookExtractor(page, OUTPUT_DIR, temp_dir, page_key, force)
     task = asyncio.create_task(run_extractor(extractor, bid, page_key, tasks, completed))
     tasks[page_key] = task
 
@@ -79,23 +81,30 @@ async def run_extractor(extractor: BookExtractor, bid: str, page_key: str, tasks
         tasks.pop(page_key, None)
 
 
-async def monitor_pages(context: BrowserContext, tasks: dict[str, asyncio.Task], completed: set[str]):
+async def monitor_pages(context: BrowserContext, tasks: dict[str, asyncio.Task], completed: set[str], temp_dir: Path, force: bool):
     while True:
         for page in context.pages:
             url = page.url
             if PDF_URL_PATTERN.search(url):
                 page_key = str(id(page))
                 if page_key not in completed and page_key not in tasks:
-                    await handle_new_page(page, tasks, completed)
+                    await handle_new_page(page, tasks, completed, temp_dir, force)
         await asyncio.sleep(2)
 
 
 async def main():
+    args = parse_args()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     user_data_dir = Path(__file__).parent / "browser_data"
+    temp_base = Path(tempfile.gettempdir()) / "WQPDFExtractor"
+    temp_base.mkdir(parents=True, exist_ok=True)
+
+    if args.force:
+        print("已启用 --force 模式，将覆盖已有页面")
 
     print("启动浏览器...")
     print(f"输出目录: {OUTPUT_DIR}")
+    print(f"临时目录: {temp_base}")
     print()
 
     async with async_playwright() as p:
@@ -123,10 +132,10 @@ async def main():
         completed: set[str] = set()
 
         context.on("page", lambda new_page: asyncio.ensure_future(
-            on_page_ready(new_page, tasks, completed)
+            on_page_ready(new_page, tasks, completed, temp_base, args.force)
         ))
 
-        monitor_task = asyncio.create_task(monitor_pages(context, tasks, completed))
+        monitor_task = asyncio.create_task(monitor_pages(context, tasks, completed, temp_base, args.force))
 
         try:
             await context.pages[0].wait_for_event("close", timeout=0)
@@ -140,10 +149,10 @@ async def main():
         print("浏览器已关闭，程序退出。")
 
 
-async def on_page_ready(page: Page, tasks: dict[str, asyncio.Task], completed: set[str]):
+async def on_page_ready(page: Page, tasks: dict[str, asyncio.Task], completed: set[str], temp_dir: Path, force: bool):
     try:
         await page.wait_for_load_state("domcontentloaded")
-        await handle_new_page(page, tasks, completed)
+        await handle_new_page(page, tasks, completed, temp_dir, force)
     except Exception:
         pass
 
