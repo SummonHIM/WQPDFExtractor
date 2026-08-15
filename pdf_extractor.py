@@ -11,8 +11,10 @@ import pikepdf
 from PIL import Image
 from playwright.async_api import Page, Route
 
+TRIAL_END_TEXT = "您的试读已结束"
 
-class BookExtractor:
+
+class PdfExtractor:
     def __init__(self, page: Page, output_dir: Path, temp_dir: Path, page_key: str, force: bool):
         self.page = page
         self.output_dir = output_dir
@@ -32,6 +34,12 @@ class BookExtractor:
         params = parse_qs(parsed.query)
         return params.get("bid", ["unknown"])[0]
 
+    async def _check_trial_end(self) -> bool:
+        text = await self.page.evaluate("""() => document.body.innerText""")
+        if TRIAL_END_TEXT in text:
+            return True
+        return False
+
     async def _intercept_images(self, route: Route):
         try:
             response = await route.fetch()
@@ -45,7 +53,7 @@ class BookExtractor:
             await route.continue_()
 
     async def extract(self):
-        print(f"[{self.bid}] 开始提取...")
+        print(f"[{self.bid}] [PDF] 开始提取...")
 
         await self.page.route("**/deep/page/lmg/**", self._intercept_images)
 
@@ -53,26 +61,23 @@ class BookExtractor:
         self.title = await self._get_title()
         safe_title = re.sub(r'[\\/:*?"<>|]', "_", self.title)
 
-        # output/bid/images 和 output/bid/书名.pdf
         book_dir = self.output_dir / self.bid
         self.image_dir = book_dir / "images"
         self.image_dir.mkdir(parents=True, exist_ok=True)
 
-        # 临时目录/WQPDFExtractor/page_key
         self.temp_image_dir = self.temp_dir / self.page_key
         self.temp_image_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"[{self.bid}] 书名: {self.title}")
-        print(f"[{self.bid}] 输出目录: {book_dir}")
-        print(f"[{self.bid}] 临时目录: {self.temp_image_dir}")
+        print(f"[{self.bid}] [PDF] 书名: {self.title}")
+        print(f"[{self.bid}] [PDF] 输出目录: {book_dir}")
+        print(f"[{self.bid}] [PDF] 临时目录: {self.temp_image_dir}")
 
         page_indices = await self._get_page_indices()
         total_pages = len(page_indices)
-        print(f"[{self.bid}] 共 {total_pages} 页")
+        print(f"[{self.bid}] [PDF] 共 {total_pages} 页")
 
-        # 检查已有的页面，跳过已下载的（除非 --force）
         if self.force:
-            print(f"[{self.bid}] --force 模式，清空已有图片")
+            print(f"[{self.bid}] [PDF] --force 模式，清空已有图片")
             for f in self.image_dir.glob("*.png"):
                 f.unlink()
         else:
@@ -86,41 +91,42 @@ class BookExtractor:
                     pass
             if existing:
                 self.saved_pages = existing
-                print(f"[{self.bid}] 已有 {len(existing)}/{total_pages} 页，跳过已下载的")
+                print(f"[{self.bid}] [PDF] 已有 {len(existing)}/{total_pages} 页，跳过已下载的")
 
         missing = [i for i in page_indices if i not in self.saved_pages]
         if not missing:
-            print(f"[{self.bid}] 所有页面已下载，直接合成PDF")
+            print(f"[{self.bid}] [PDF] 所有页面已下载，直接合成PDF")
         else:
-            print(f"[{self.bid}] 需要下载 {len(missing)} 页")
+            print(f"[{self.bid}] [PDF] 需要下载 {len(missing)} 页")
             for i in missing:
+                if await self._check_trial_end():
+                    print(f"[{self.bid}] [PDF] 试读已结束，停止提取")
+                    break
                 try:
                     await asyncio.wait_for(self._extract_page(i, total_pages), timeout=60)
                 except asyncio.TimeoutError:
-                    print(f"[{self.bid}] 页 {i} 超时60s，刷新页面重试...")
+                    print(f"[{self.bid}] [PDF] 页 {i} 超时60s，刷新页面重试...")
                     await self._reload_and_wait()
                     try:
                         await asyncio.wait_for(self._extract_page(i, total_pages), timeout=60)
                     except asyncio.TimeoutError:
-                        print(f"[{self.bid}] 页 {i} 重试后仍超时，跳过")
+                        print(f"[{self.bid}] [PDF] 页 {i} 重试后仍超时，跳过")
                     except Exception as e:
-                        print(f"[{self.bid}] 页 {i} 重试异常: {e}")
+                        print(f"[{self.bid}] [PDF] 页 {i} 重试异常: {e}")
                 except Exception as e:
-                    print(f"[{self.bid}] 页 {i} 异常: {e}")
+                    print(f"[{self.bid}] [PDF] 页 {i} 异常: {e}")
                     traceback.print_exc()
 
         await self.page.unroute("**/deep/page/lmg/**", self._intercept_images)
 
-        # 提取目录
         toc = await self._extract_toc()
         if toc:
-            print(f"[{self.bid}] 提取到 {len(toc)} 个目录项")
+            print(f"[{self.bid}] [PDF] 提取到 {len(toc)} 个目录项")
 
         pdf_path = book_dir / f"{safe_title}.pdf"
         self._compile_pdf(pdf_path, page_indices, toc)
-        print(f"[{self.bid}] PDF 已保存: {pdf_path}")
+        print(f"[{self.bid}] [PDF] PDF 已保存: {pdf_path}")
 
-        # 清理临时目录
         shutil.rmtree(self.temp_image_dir, ignore_errors=True)
 
     async def _get_title(self) -> str:
@@ -154,7 +160,7 @@ class BookExtractor:
         selector = f'#pb .page-img-box[index="{index}"]'
         box = await self.page.query_selector(selector)
         if not box:
-            print(f"[{self.bid}] 页 {index} 未找到")
+            print(f"[{self.bid}] [PDF] 页 {index} 未找到")
             return
 
         await self.page.evaluate("""(sel) => {
@@ -165,28 +171,26 @@ class BookExtractor:
 
         loaded = await self._wait_for_slices_loaded(selector, index)
         if not loaded:
-            print(f"[{self.bid}] 页 {index} 切片未加载完成")
+            print(f"[{self.bid}] [PDF] 页 {index} 切片未加载完成")
             return
 
         layout = await self._get_page_layout(selector)
         if not layout:
-            print(f"[{self.bid}] 页 {index} 获取布局失败")
+            print(f"[{self.bid}] [PDF] 页 {index} 获取布局失败")
             return
 
-        # 先保存到临时目录
         temp_path = self.temp_image_dir / f"{index:04d}.png"
         self._compose_page(layout, temp_path)
 
         if not temp_path.exists() or temp_path.stat().st_size == 0:
-            print(f"[{self.bid}] 页 {index} 保存失败")
+            print(f"[{self.bid}] [PDF] 页 {index} 保存失败")
             return
 
-        # 复制到正式目录
         final_path = self.image_dir / f"{index:04d}.png"
         shutil.copy2(str(temp_path), str(final_path))
 
         self.saved_pages.add(index)
-        print(f"[{self.bid}] 页 {index}/{total_pages} 已保存 ({final_path.stat().st_size} bytes)")
+        print(f"[{self.bid}] [PDF] 页 {index}/{total_pages} 已保存 ({final_path.stat().st_size} bytes)")
 
     async def _wait_for_slices_loaded(self, box_selector: str, index: int) -> bool:
         img_l_selector = f'{box_selector} .page_img_l'
@@ -195,14 +199,14 @@ class BookExtractor:
             container = await self.page.query_selector(img_l_selector)
             if not container:
                 if attempt % 20 == 0:
-                    print(f"[{self.bid}] 页 {index} 等待 .page_img_l 出现... ({attempt})")
+                    print(f"[{self.bid}] [PDF] 页 {index} 等待 .page_img_l 出现... ({attempt})")
                 await asyncio.sleep(0.5)
                 continue
 
             imgs = await container.query_selector_all("img")
             if not imgs:
                 if attempt % 20 == 0:
-                    print(f"[{self.bid}] 页 {index} .page_img_l 内无 img... ({attempt})")
+                    print(f"[{self.bid}] [PDF] 页 {index} .page_img_l 内无 img... ({attempt})")
                 await asyncio.sleep(0.5)
                 continue
 
@@ -215,7 +219,7 @@ class BookExtractor:
 
             if all_loaded:
                 await asyncio.sleep(0.5)
-                print(f"[{self.bid}] 页 {index} 切片已加载 ({len(imgs)} 片)")
+                print(f"[{self.bid}] [PDF] 页 {index} 切片已加载 ({len(imgs)} 片)")
                 return True
 
             await asyncio.sleep(0.5)
@@ -285,7 +289,7 @@ class BookExtractor:
 
             img_bytes = self._find_cached_image(src)
             if not img_bytes:
-                print(f"[{self.bid}]   切片 {i} 未在缓存中找到 (src: {src[:50]})")
+                print(f"[{self.bid}] [PDF]   切片 {i} 未在缓存中找到 (src: {src[:50]})")
                 continue
 
             try:
@@ -294,7 +298,7 @@ class BookExtractor:
                     piece = piece.resize((width, canvas_height), Image.LANCZOS)
                 canvas.paste(piece, (left, 0))
             except Exception as e:
-                print(f"[{self.bid}]   切片 {i} 拼接失败: {e}")
+                print(f"[{self.bid}] [PDF]   切片 {i} 拼接失败: {e}")
 
         if rotation == 180:
             canvas = canvas.rotate(180, expand=False)
@@ -363,13 +367,13 @@ class BookExtractor:
             }""")
             return toc or []
         except Exception as e:
-            print(f"[{self.bid}] 提取目录失败: {e}")
+            print(f"[{self.bid}] [PDF] 提取目录失败: {e}")
             return []
 
     async def _reload_and_wait(self):
         await self.page.reload(wait_until="domcontentloaded")
         await self.page.wait_for_selector("#pb", timeout=30000)
-        print(f"[{self.bid}] 页面已刷新")
+        print(f"[{self.bid}] [PDF] 页面已刷新")
 
     def _compile_pdf(self, pdf_path: Path, page_indices: list[int], toc: list[dict]):
         image_files = []
@@ -379,10 +383,10 @@ class BookExtractor:
                 image_files.append(str(img_path))
 
         if not image_files:
-            print(f"[{self.bid}] 没有图片可合成PDF")
+            print(f"[{self.bid}] [PDF] 没有图片可合成PDF")
             return
 
-        print(f"[{self.bid}] 合成PDF: {len(image_files)} 页")
+        print(f"[{self.bid}] [PDF] 合成PDF: {len(image_files)} 页")
         with open(pdf_path, "wb") as f:
             f.write(img2pdf.convert(image_files))
 
@@ -396,9 +400,9 @@ class BookExtractor:
                 with pdf.open_outline() as outline:
                     self._add_bookmarks(outline.root, toc, page_to_idx, pdf)
                 pdf.save(pdf_path)
-            print(f"[{self.bid}] 书签已添加")
+            print(f"[{self.bid}] [PDF] 书签已添加")
         except Exception as e:
-            print(f"[{self.bid}] 添加书签失败: {e}")
+            print(f"[{self.bid}] [PDF] 添加书签失败: {e}")
             traceback.print_exc()
 
     def _add_bookmarks(self, parent, items: list[dict], page_map: dict, pdf):

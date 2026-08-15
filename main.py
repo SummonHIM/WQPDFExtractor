@@ -6,11 +6,13 @@ from pathlib import Path
 
 from playwright.async_api import async_playwright, BrowserContext, Page
 
-from extractor import BookExtractor
+from epub_extractor import EpubExtractor
+from pdf_extractor import PdfExtractor
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 BOOKSHELF_URL = "https://wqbook.wqxuetang.com/user/userbookshelf"
-PDF_URL_PATTERN = re.compile(r"https://[^/]*\.wqxuetang\.com/deep/read/pdf")
+PDF_URL_PATTERN = re.compile(r"https://[^/]*\.wqxuetang\.com/deep/read/pdf\b")
+EPUB_URL_PATTERN = re.compile(r"https://[^/]*\.wqxuetang\.com/deep/read/epub")
 
 DISABLE_DEVTOOL_BYPASS = """
 Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
@@ -51,9 +53,6 @@ def parse_args():
 
 async def handle_new_page(page: Page, tasks: dict[str, asyncio.Task], completed: set[str], temp_dir: Path, force: bool):
     url = page.url
-    if not PDF_URL_PATTERN.search(url):
-        return
-
     page_key = str(id(page))
 
     if page_key in completed:
@@ -64,13 +63,20 @@ async def handle_new_page(page: Page, tasks: dict[str, asyncio.Task], completed:
     bid_match = re.search(r"bid=(\d+)", url)
     bid = bid_match.group(1) if bid_match else "unknown"
 
-    print(f"[{bid}] 检测到新的PDF页面: {url}")
-    extractor = BookExtractor(page, OUTPUT_DIR, temp_dir, page_key, force)
+    if EPUB_URL_PATTERN.search(url):
+        print(f"[{bid}] 检测到新的EPUB页面: {url}")
+        extractor = EpubExtractor(page, OUTPUT_DIR, temp_dir, page_key, force)
+    elif PDF_URL_PATTERN.search(url):
+        print(f"[{bid}] 检测到新的PDF页面: {url}")
+        extractor = PdfExtractor(page, OUTPUT_DIR, temp_dir, page_key, force)
+    else:
+        return
+
     task = asyncio.create_task(run_extractor(extractor, bid, page_key, tasks, completed))
     tasks[page_key] = task
 
 
-async def run_extractor(extractor: BookExtractor, bid: str, page_key: str, tasks: dict, completed: set):
+async def run_extractor(extractor, bid: str, page_key: str, tasks: dict, completed: set):
     try:
         await extractor.extract()
         print(f"[{bid}] 提取完成")
@@ -85,7 +91,7 @@ async def monitor_pages(context: BrowserContext, tasks: dict[str, asyncio.Task],
     while True:
         for page in context.pages:
             url = page.url
-            if PDF_URL_PATTERN.search(url):
+            if PDF_URL_PATTERN.search(url) or EPUB_URL_PATTERN.search(url):
                 page_key = str(id(page))
                 if page_key not in completed and page_key not in tasks:
                     await handle_new_page(page, tasks, completed, temp_dir, force)
@@ -123,8 +129,9 @@ async def main():
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(BOOKSHELF_URL)
         print(f"已打开书架页面: {BOOKSHELF_URL}")
-        print("请登录后打开需要提取的PDF页面，程序会自动开始提取。")
-        print("支持同时打开多个PDF页面并行提取。")
+        print("请登录后打开需要提取的页面，程序会自动开始提取。")
+        print("支持 PDF 阅读器和 EPUB 阅读器。")
+        print("支持同时打开多个页面并行提取。")
         print("关闭浏览器窗口即可退出程序。")
         print()
 

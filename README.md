@@ -1,18 +1,28 @@
 # WQPDFExtractor
 
-A browser-based tool that extracts page images from online PDF readers and compiles them into local PDF files. It uses Playwright to automate a real Chromium browser, intercepts image slice network requests, reassembles them with correct layout and rotation, and outputs a complete PDF with bookmarks.
+A browser-based tool that extracts content from online book readers and compiles them into local PDF files. It uses Playwright to automate a real Chromium browser, supporting both PDF image readers and EPUB HTML readers.
 
 ## Features
 
-- **Automatic detection** — monitors browser tabs and starts extraction when a PDF reader page is opened
+- **Dual reader support** — handles both PDF image readers and EPUB HTML readers automatically
+- **Automatic detection** — monitors browser tabs and starts extraction when a reader page is opened
 - **Parallel extraction** — supports multiple tabs extracting different books simultaneously
-- **Network interception** — captures image data directly from network responses, no re-downloading needed
-- **Slice reassembly** — handles pages split into multiple image fragments, positioned via CSS layout
-- **Rotation correction** — detects CSS transform matrices and corrects page orientation (0°/90°/180°/270°)
-- **Bookmarks** — extracts the table of contents and embeds it as PDF bookmarks (including nested chapters)
-- **Crash recovery** — resumes from previously downloaded pages on restart, only fetching missing ones
-- **Auto-retry** — if a page stalls for over 60 seconds, automatically reloads and retries
-- **Persistent session** — browser data is saved locally so you don't need to log in every time
+- **PDF reader**:
+  - Network interception to capture image slices directly
+  - Slice reassembly with CSS layout positioning
+  - Rotation correction via CSS transform matrix detection (0/90/180/270)
+  - Auto-retry on 60s stall with page reload
+  - Bookmarks extracted from table of contents (nested chapters supported)
+- **EPUB reader** (experimental):
+  - Extracts decrypted HTML content from the rendered iframe
+  - Downloads all external resources (CSS, images, fonts, etc.) into per-chapter folders
+  - Rewrites CSS `url()` references to local paths
+  - Converts chapters to A4-sized PDF pages
+  - Automatic single-column layout switching
+  - Bookmarks not yet supported
+- **Crash recovery** — resumes from previously downloaded content on restart
+- **Trial detection** — stops and notifies when trial reading limit is reached
+- **Persistent session** — browser data saved locally, no repeated logins
 
 ## Requirements
 
@@ -29,13 +39,13 @@ playwright install chromium
 ## Usage
 
 ```bash
-python main.py            # resume mode (skips already downloaded pages)
-python main.py --force    # re-download all pages from scratch
+python main.py            # resume mode (skips already downloaded content)
+python main.py --force    # re-download everything from scratch
 ```
 
 1. A Chromium window opens and navigates to the bookshelf page.
 2. Log in manually if needed.
-3. Open any book's PDF reader page — extraction starts automatically.
+3. Open any book's reader page — extraction starts automatically.
 4. Open multiple books in separate tabs for parallel extraction.
 5. Close the browser window to exit.
 
@@ -44,11 +54,20 @@ python main.py --force    # re-download all pages from scratch
 ```
 output/
 └── {book_id}/
-    ├── images/
+    ├── images/              # PDF reader: reassembled page images
     │   ├── 0001.png
-    │   ├── 0002.png
+    │   └── ...
+    ├── html/                # EPUB reader: per-chapter HTML + resources
+    │   ├── 0001/
+    │   │   ├── index.html
+    │   │   └── assets/
+    │   │       ├── stylesheet.css
+    │   │       ├── image1.png
+    │   │       └── ...
+    │   ├── 0002/
+    │   │   └── ...
     │   └── ...
     └── {book_title}.pdf
 ```
 
-Intermediate downloads are stored in a temporary directory (`%TEMP%/WQPDFExtractor/`) and copied to `output/` only after each page is fully processed. This ensures incomplete pages from a crash are not mistaken for finished ones on the next run.
+Intermediate downloads are stored in a temporary directory (`%TEMP%/WQPDFExtractor/`) and copied to `output/` only after each page/chapter is fully processed. This ensures incomplete data from a crash is not mistaken for finished content on the next run.
